@@ -1,0 +1,70 @@
+seed: 0
+log_dir: "./log"
+notes: "swiss_roll - variational DFINE"
+run_name: "VDFINE"
+
+data:
+  test_ratio: 0.2
+  num_episodes: 1000
+  action_repeat: 1
+
+env:
+  name: swiss_roll
+  horizon: 100
+  periodic: False
+
+  A:
+    - [1.0, 0.0]
+    - [0.0, 1.0]
+  B:
+    - [1.0, 0.0]
+    - [0.0, 1.0]
+  Ns:
+    - [0.0001, 0.0]
+    - [0.0, 0.0001]
+  "No":
+    - [0.0001, 0.0, 0.0]
+    - [0.0, 0.0001, 0.0]
+    - [0.0, 0.0, 0.0001]
+
+train:
+  backbone:
+    num_updates: 2000
+    test_interval: 10
+    x_dim: 3
+    a_dim: 3
+    hidden_dim: 128
+    min_var: 1e-2
+    max_var: 1.0
+    encoder_min_var: 1e-3
+    locally_linear: False
+    chunk_length: 32
+    overshoot_d: 1
+    prediction_k: 8
+    num_pred_samples: 1
+    batch_size: 128
+    lr: 1e-3
+    eps: 1e-8
+    weight_decay: 1e-6
+    clip_grad_norm: 1.0
+    disable_gpu: True
+    kl_dynamics_weight: 1.0
+    kl_emission_weight: 1.0
+    pred_weight: 1.0
+    kl_free_nats: 3.0
+  cost:
+    num_updates: 2500
+    test_interval: 10
+    chunk_length: 32
+    batch_size: 256
+    lr: 3e-3
+    eps: 1e-8
+    weight_decay: 1e-6
+    clip_grad_norm: 1.0
+    disable_gpu: True
+
+evaluation:
+  num_points: 1
+  num_regions: 1
+  deterministic: True
+  planning_horizon: 8
