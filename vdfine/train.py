@@ -124,6 +124,16 @@ def compute_elbo_losses(
 
         pred_loss = pred_loss / config.prediction_k
 
+    # ---- EM noise update (when learn_noise=False) ----
+    if not dynamics_model.learn_noise:
+        noise_ema_tau = getattr(config, 'noise_ema_tau', 0.01)
+        dynamics_model.update_noise_ema(
+            posteriors=posteriors,
+            a_samples=a_samples_seq,
+            u=u_context,
+            tau=noise_ema_tau,
+        )
+
     # ---- Gramian regularization ----
     gramian_loss = torch.tensor(0.0, device=device)
     gramian_weight = getattr(config, 'gramian_weight', 0.0)
@@ -183,6 +193,8 @@ def train_backbone(
         locally_linear=config.locally_linear,
         stable_a=getattr(config, 'stable_a', False),
         gauge_fix=getattr(config, 'gauge_fix', False),
+        learn_noise=getattr(config, 'learn_noise', True),
+        noise_init=getattr(config, 'noise_init', 1e-2),
     ).to(device)
 
     wandb.watch([encoder, dynamics_model, decoder], log="all", log_freq=10)

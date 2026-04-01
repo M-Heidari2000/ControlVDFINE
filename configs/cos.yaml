@@ -36,6 +36,9 @@ train:
     stable_a: True
     gauge_fix: True
     gramian_weight: 0.1
+    learn_noise: False
+    noise_init: 1e-2
+    noise_ema_tau: 0.01
     chunk_length: 32
     overshoot_d: 1
     prediction_k: 8

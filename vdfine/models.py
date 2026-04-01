@@ -110,6 +110,8 @@ class Dynamics(nn.Module):
         locally_linear: Optional[bool] = False,
         stable_a: Optional[bool] = False,
         gauge_fix: Optional[bool] = False,
+        learn_noise: Optional[bool] = True,
+        noise_init: float = 1e-2,
     ):
         super().__init__()
 
@@ -121,6 +123,7 @@ class Dynamics(nn.Module):
         self.locally_linear = locally_linear
         self.stable_a = stable_a
         self.gauge_fix = gauge_fix
+        self.learn_noise = learn_noise
 
         if self.locally_linear:
             self.backbone = nn.Sequential(
@@ -146,8 +149,13 @@ class Dynamics(nn.Module):
                 self._A = nn.Parameter(torch.eye(x_dim))
             self.B_raw = nn.Parameter(torch.randn(x_dim, u_dim) * 0.1)
             self.C_raw = nn.Parameter(torch.randn(a_dim, x_dim) * 0.1)
-            self.nx = nn.Parameter(torch.randn(x_dim))
-            self.na = nn.Parameter(torch.randn(a_dim))
+
+            if self.learn_noise:
+                self.nx = nn.Parameter(torch.randn(x_dim))
+                self.na = nn.Parameter(torch.randn(a_dim))
+            else:
+                self.register_buffer('nx_diag', torch.full((x_dim,), noise_init))
+                self.register_buffer('na_diag', torch.full((a_dim,), noise_init))
 
     @property
     def A(self):
@@ -187,6 +195,18 @@ class Dynamics(nn.Module):
         P = P + eps * torch.eye(P.size(-1), device=P.device).expand(b, -1, -1)
         return P
 
+    def _get_nx_diag(self):
+        """Get process noise diagonal (works for both learn_noise modes)."""
+        if self.learn_noise:
+            return self._min_var + (self._max_var - self._min_var) * torch.sigmoid(self.nx)
+        return self.nx_diag.clamp(min=self._min_var)
+
+    def _get_na_diag(self):
+        """Get emission noise diagonal (works for both learn_noise modes)."""
+        if self.learn_noise:
+            return self._min_var + (self._max_var - self._min_var) * torch.sigmoid(self.na)
+        return self.na_diag.clamp(min=self._min_var)
+
     def get_dynamics(self, x):
         """
             get dynamics matrices depending on the state x
@@ -205,8 +225,8 @@ class Dynamics(nn.Module):
             A = self.A.expand(b, -1, -1)
             B = self.B.expand(b, -1, -1)
             C = self.C.expand(b, -1, -1)
-            Nx = torch.diag_embed(self._min_var + (self._max_var - self._min_var) * torch.sigmoid(self.nx)).expand(b, -1, -1)
-            Na = torch.diag_embed(self._min_var + (self._max_var - self._min_var) * torch.sigmoid(self.na)).expand(b, -1, -1)
+            Nx = torch.diag_embed(self._get_nx_diag()).expand(b, -1, -1)
+            Na = torch.diag_embed(self._get_na_diag()).expand(b, -1, -1)
 
         return A, B, C, Nx, Na
 
@@ -217,6 +237,50 @@ class Dynamics(nn.Module):
 
         _, _, C, _, _ = self.get_dynamics(x=x)
         return torch.einsum('bij,bj->bi', C, x)
+
+    @torch.no_grad()
+    def update_noise_ema(
+        self,
+        posteriors: List[MultivariateNormal],
+        a_samples: torch.Tensor,
+        u: torch.Tensor,
+        tau: float = 0.01,
+    ):
+        """
+        EM-style noise update: compute empirical Nx, Na from residuals and
+        update the buffers via exponential moving average.
+
+        Args:
+            posteriors: list of T posterior distributions from Kalman filtering
+            a_samples: (T, B, a_dim) encoded observations used for filtering
+            u: (T, B, u_dim) control inputs
+            tau: EMA decay rate
+        """
+        if self.learn_noise or self.locally_linear:
+            return
+
+        T = len(posteriors)
+        x_means = torch.stack([p.loc for p in posteriors], dim=0)  # (T, B, x_dim)
+
+        # Process residuals: e_x,t = x_t - (A x_{t-1} + B u_{t-1})
+        A_mat = self.A
+        B_mat = self.B
+        x_pred = torch.einsum('ij,tbj->tbi', A_mat, x_means[:-1]) + \
+                 torch.einsum('ij,tbj->tbi', B_mat, u[:-1])
+        ex = x_means[1:] - x_pred  # (T-1, B, x_dim)
+
+        # Emission residuals: e_a,t = a_t - C x_t
+        C_mat = self.C
+        a_pred = torch.einsum('ij,tbj->tbi', C_mat, x_means)
+        ea = a_samples - a_pred  # (T, B, a_dim)
+
+        # Empirical diagonal variances
+        nx_hat = (ex ** 2).mean(dim=(0, 1))  # (x_dim,)
+        na_hat = (ea ** 2).mean(dim=(0, 1))  # (a_dim,)
+
+        # EMA update
+        self.nx_diag.mul_(1 - tau).add_(tau * nx_hat)
+        self.na_diag.mul_(1 - tau).add_(tau * na_hat)
 
     def prior(
         self,
@@ -306,8 +370,7 @@ class Dynamics(nn.Module):
 
         A_mat = self.A
         B_mat = self.B
-        Nx_diag = self._min_var + (self._max_var - self._min_var) * torch.sigmoid(self.nx)
-        Nx = torch.diag(Nx_diag)
+        Nx = torch.diag(self._get_nx_diag())
 
         # A^d
         A_d = torch.matrix_power(A_mat, d)
@@ -373,8 +436,7 @@ class Dynamics(nn.Module):
             _, _, C, _, Na = self.get_dynamics(x=mu_x)
         else:
             C = self.C.expand(b, -1, -1)
-            Na_diag = self._min_var + (self._max_var - self._min_var) * torch.sigmoid(self.na)
-            Na = torch.diag(Na_diag).expand(b, -1, -1)
+            Na = torch.diag(self._get_na_diag()).expand(b, -1, -1)
 
         da = self.a_dim
 
@@ -425,10 +487,8 @@ class Dynamics(nn.Module):
         A_mat = self.A
         B_mat = self.B
         C_mat = self.C
-        Nx_diag = self._min_var + (self._max_var - self._min_var) * torch.sigmoid(self.nx)
-        Nx = torch.diag(Nx_diag)
-        Na_diag = self._min_var + (self._max_var - self._min_var) * torch.sigmoid(self.na)
-        Na = torch.diag(Na_diag)
+        Nx = torch.diag(self._get_nx_diag())
+        Na = torch.diag(self._get_na_diag())
 
         a_means = []
         a_covs = []
