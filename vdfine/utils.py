@@ -87,6 +87,44 @@ def make_grid(
     return regions
 
 
+def solve_discrete_lyapunov_torch(A: torch.Tensor, Q: torch.Tensor) -> torch.Tensor:
+    """
+    Solve the discrete Lyapunov equation X = A X A^T + Q via vectorization.
+    """
+    n = A.shape[0]
+    I = torch.eye(n * n, dtype=A.dtype, device=A.device)
+    return torch.linalg.solve(
+        I - torch.kron(A, A) + 1e-6 * I,
+        Q.reshape(-1, 1)
+    ).reshape(n, n)
+
+
+def compute_gramians(A: torch.Tensor, B: torch.Tensor, C: torch.Tensor):
+    """
+    Compute controllability and observability Gramians via discrete Lyapunov equations.
+    Wc = A Wc A^T + B B^T,  Wo = A^T Wo A + C^T C
+    """
+    Wc = solve_discrete_lyapunov_torch(A, B @ B.T)
+    Wo = solve_discrete_lyapunov_torch(A.T, C.T @ C)
+    return Wc, Wo
+
+
+def compute_hsv(Wc: torch.Tensor, Wo: torch.Tensor) -> torch.Tensor:
+    """Compute Hankel singular values from Gramians."""
+    return torch.sqrt(
+        torch.linalg.eigvals(Wc @ Wo).real.clamp(min=0)
+    ).sort(descending=True).values
+
+
+def gramian_min_eig_loss(A: torch.Tensor, B: torch.Tensor, C: torch.Tensor) -> torch.Tensor:
+    """
+    Gramian regularization: -log(lambda_min(Wc @ Wo)).
+    Encourages all directions to be jointly controllable and observable.
+    """
+    Wc, Wo = compute_gramians(A, B, C)
+    return -torch.log(torch.linalg.eigvals(Wc @ Wo).real.clamp(min=1e-12).min())
+
+
 def jsonify(d: Dict[str, Any]) -> Dict[str, Any]:
     out = {}
     for k, v in d.items():

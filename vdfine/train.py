@@ -5,7 +5,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from omegaconf.dictconfig import DictConfig
 from .memory import ReplayBuffer
-from .utils import bottle_mvn
+from .utils import bottle_mvn, gramian_min_eig_loss
 from torch.nn.utils import clip_grad_norm_
 from .models import (
     Encoder,
@@ -124,12 +124,21 @@ def compute_elbo_losses(
 
         pred_loss = pred_loss / config.prediction_k
 
-    # ---- Total loss (negative ELBO) ----
+    # ---- Gramian regularization ----
+    gramian_loss = torch.tensor(0.0, device=device)
+    gramian_weight = getattr(config, 'gramian_weight', 0.0)
+    if gramian_weight > 0 and not dynamics_model.locally_linear:
+        gramian_loss = gramian_min_eig_loss(
+            dynamics_model.A, dynamics_model.B, dynamics_model.C
+        )
+
+    # ---- Total loss (negative ELBO + regularization) ----
     total_loss = (
         recon_loss
         + config.kl_dynamics_weight * dynamics_kl
         + config.kl_emission_weight * emission_loss
         + config.pred_weight * pred_loss
+        + gramian_weight * gramian_loss
     )
 
     return {
@@ -137,6 +146,7 @@ def compute_elbo_losses(
         "dynamics_kl": dynamics_kl,
         "emission_loss": emission_loss,
         "pred_loss": pred_loss,
+        "gramian_loss": gramian_loss,
         "total_loss": total_loss,
     }
 
@@ -171,6 +181,8 @@ def train_backbone(
         min_var=config.min_var,
         max_var=config.max_var,
         locally_linear=config.locally_linear,
+        stable_a=getattr(config, 'stable_a', False),
+        gauge_fix=getattr(config, 'gauge_fix', False),
     ).to(device)
 
     wandb.watch([encoder, dynamics_model, decoder], log="all", log_freq=10)
@@ -219,6 +231,7 @@ def train_backbone(
             "train/dynamics_kl": losses["dynamics_kl"].item(),
             "train/emission_loss": losses["emission_loss"].item(),
             "train/pred_loss": losses["pred_loss"].item(),
+            "train/gramian_loss": losses["gramian_loss"].item(),
             "train/total_loss": losses["total_loss"].item(),
             "global_step": update,
         })
@@ -246,6 +259,7 @@ def train_backbone(
                     "test/dynamics_kl": losses["dynamics_kl"].item(),
                     "test/emission_loss": losses["emission_loss"].item(),
                     "test/pred_loss": losses["pred_loss"].item(),
+                    "test/gramian_loss": losses["gramian_loss"].item(),
                     "test/total_loss": losses["total_loss"].item(),
                     "global_step": update,
                 })

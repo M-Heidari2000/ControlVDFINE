@@ -81,11 +81,22 @@ class CostModel(nn.Module):
         return cost
 
 
+def _cayley(S):
+    """Cayley transform: maps skew-symmetric S to orthogonal matrix."""
+    n = S.shape[0]
+    I = torch.eye(n, device=S.device, dtype=S.dtype)
+    return torch.linalg.solve(I + (S - S.T), I - (S - S.T))
+
+
 class Dynamics(nn.Module):
 
     """
         Linear Gaussian state-space model with Kalman filtering.
         Supports analytical ELBO computation for the variational DFINE.
+
+        Options:
+            stable_a: parameterize A via Cayley transform to guarantee rho(A) < 1
+            gauge_fix: normalize B and C to unit Frobenius norm
     """
 
     def __init__(
@@ -97,6 +108,8 @@ class Dynamics(nn.Module):
         min_var: float = 1e-2,
         max_var: float = 1.0,
         locally_linear: Optional[bool] = False,
+        stable_a: Optional[bool] = False,
+        gauge_fix: Optional[bool] = False,
     ):
         super().__init__()
 
@@ -106,6 +119,8 @@ class Dynamics(nn.Module):
         self._min_var = min_var
         self._max_var = max_var
         self.locally_linear = locally_linear
+        self.stable_a = stable_a
+        self.gauge_fix = gauge_fix
 
         if self.locally_linear:
             self.backbone = nn.Sequential(
@@ -124,11 +139,40 @@ class Dynamics(nn.Module):
 
             self._init_weights()
         else:
-            self.A = nn.Parameter(torch.eye(x_dim))
-            self.B = nn.Parameter(torch.randn(x_dim, u_dim))
-            self.C = nn.Parameter(torch.randn(a_dim, x_dim))
+            if self.stable_a:
+                self.d_raw = nn.Parameter(torch.zeros(x_dim))
+                self.S_raw = nn.Parameter(torch.randn(x_dim, x_dim) * 0.1)
+            else:
+                self._A = nn.Parameter(torch.eye(x_dim))
+            self.B_raw = nn.Parameter(torch.randn(x_dim, u_dim) * 0.1)
+            self.C_raw = nn.Parameter(torch.randn(a_dim, x_dim) * 0.1)
             self.nx = nn.Parameter(torch.randn(x_dim))
             self.na = nn.Parameter(torch.randn(a_dim))
+
+    @property
+    def A(self):
+        if self.locally_linear:
+            raise AttributeError("A is state-dependent for locally_linear dynamics")
+        if self.stable_a:
+            d = F.softplus(self.d_raw)
+            return torch.diag(d.sqrt()) @ _cayley(self.S_raw) @ torch.diag((d + 1).rsqrt())
+        return self._A
+
+    @property
+    def B(self):
+        if self.locally_linear:
+            raise AttributeError("B is state-dependent for locally_linear dynamics")
+        if self.gauge_fix:
+            return self.B_raw / self.B_raw.norm().clamp(min=1e-8)
+        return self.B_raw
+
+    @property
+    def C(self):
+        if self.locally_linear:
+            raise AttributeError("C is state-dependent for locally_linear dynamics")
+        if self.gauge_fix:
+            return self.C_raw / self.C_raw.norm().clamp(min=1e-8)
+        return self.C_raw
 
     def _init_weights(self):
         for m in self.backbone.modules():
