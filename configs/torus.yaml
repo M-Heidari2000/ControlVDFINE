@@ -17,25 +17,25 @@ env:
   rotated: True
 
   A:
-    - [1.0, 0.0]
-    - [0.0, 1.0]
+    - [0.95, 0.0]
+    - [0.0, 0.95]
   B:
     - [1.0, 0.0]
     - [0.0, 1.0]
   Ns:
-    - [0.0001, 0.0]
-    - [0.0, 0.0001]
+    - [0.01, 0.0]
+    - [0.0, 0.01]
   "No":
-    - [0.0001, 0.0, 0.0]
-    - [0.0, 0.0001, 0.0]
-    - [0.0, 0.0, 0.0001]
+    - [0.01, 0.0, 0.0]
+    - [0.0, 0.01, 0.0]
+    - [0.0, 0.0, 0.01]
 
 train:
   backbone:
     num_updates: 2000
     test_interval: 10
-    x_dim: 3
-    a_dim: 3
+    x_dim: 2
+    a_dim: 2
     hidden_dim: 128
     min_var: 1e-2
     max_var: 1.0
@@ -47,15 +47,12 @@ train:
     learn_noise: False
     noise_init: 1e-2
     noise_ema_tau: 0.01
-    learn_noise: False
-    noise_init: 1e-2
-    noise_ema_tau: 0.01
     chunk_length: 32
     overshoot_d: 1
     prediction_k: 8
     num_pred_samples: 1
     batch_size: 128
-    lr: 1e-3
+    lr: 1e-2
     eps: 1e-8
     weight_decay: 1e-6
     clip_grad_norm: 1.0
